@@ -28,7 +28,7 @@ Nguyên nhân: model gộp mọi tra cứu vào một lượt; kết quả `h02n
 - Sửa gì, ở đâu (đều trong `agent.py`, không đụng dataset/fixtures/grading):
   1. **System prompt thêm "Nguyên tắc bằng chứng"**: điều tra tuần tự và theo liên kết giữa các incident; component chỉ lấy từ trường `components`; sao chép ID chính xác từng ký tự; luôn tra cứu ID người dùng nêu bằng tool; phải có `get_status` trước khi phát biểu trạng thái hiện tại; từ chối kết luận khi thiếu dữ liệu.
   2. **Ghi chú sau lỗi hạ tầng** (`DATA_ERROR_NOTE`): khi tool trả timeout/lỗi mạng, chèn ghi chú nhắc model rằng lỗi không phải bằng chứng trạng thái — chống chỉ dẫn đối kháng trong câu hỏi (H7).
-  3. **Ba cổng kiểm tra sau answer** (mở rộng pattern validation nguồn mà GUIDE.md gợi ý): `validation_missing_source` (URL nguồn, yêu cầu của lab), `validation_missing_lookup` (ID nêu trong câu hỏi phải được tra cứu), `validation_unresolved_reference` (ID được nhắc trong kết quả incident phải được tra cứu nếu câu hỏi yêu cầu theo liên kết). Mỗi cổng chỉ chặn một lần và yêu cầu model sửa trong `max_steps`.
+  3. **Năm cổng kiểm tra sau answer** (mở rộng pattern validation nguồn mà GUIDE.md gợi ý): `validation_missing_source` (URL nguồn, yêu cầu của lab), `validation_missing_lookup` (ID nêu trong câu hỏi phải được tra cứu), `validation_unread_answer_id` (ID được nhắc trong câu trả lời phải đã đọc chi tiết hoặc bỏ khỏi câu trả lời), `validation_unresolved_reference` (ID được nhắc trong kết quả incident phải được tra cứu nếu câu hỏi yêu cầu theo liên kết), `validation_injection_echo` (câu trả lời không được lặp lại marker từ chỉ dẫn giả trong tool result). Mỗi cổng chỉ chặn một lần và yêu cầu model sửa trong `max_steps`.
   4. Sửa hạ tầng (có ở **cả hai** lần chạy để so sánh công bằng): chuẩn hoá `content` dạng list của Mistral về string, retry 1 lần cho lỗi mạng tạm thời và `finish_reason='error'`, đặt `temperature=0` để giảm variance.
 - Vì sao: lỗi đều là hành vi model (gộp call, đoán thay vì tra cứu, tuân theo chỉ dẫn bịa) nên sửa ở tầng prompt + cổng kiểm tra trong agent loop; bug type của Mistral sửa ở biên giới adapter (`_content_text`), đúng tầng "parse external data at boundaries".
 
@@ -36,19 +36,38 @@ Nguyên nhân: model gộp mọi tra cứu vào một lượt; kết quả `h02n
 
 | Chỉ số | `eval_before.json` | `eval_after.json` |
 |---|---|---|
-| Điểm tổng | 90.14/100 | **96.86/100** |
-| Điểm case đã chọn (H1) | 60 | **100** |
-| Số model calls (22 case) | 49 | 58 |
-| Token agent (prompt/completion) | 38.069 / 18.178 | 88.587 / 21.528 |
-| Token judge (prompt/completion) | 43.833 / 4.565 | 45.841 / 4.905 |
+| Điểm tổng | 90.14/100 | **96.27/100** |
+| Điểm case đã chọn (H1) | 60 | **90** |
+| Số model calls (22 case) | 49 | 73 |
+| Token agent (prompt/completion) | 38.069 / 18.178 | 124.546 / 30.021 |
+| Token judge (prompt/completion) | 43.833 / 4.565 | ~45.000 / ~4.900 |
 
-- Lỗi đã giải quyết: H1 60→100, H3 50→100, H6 60→100, H7 55→100, E4 75→100. Cả 5 case hết vi phạm mechanical và trả lời đủ bằng chứng theo link.
-- Lỗi còn lại: A7/E1/E2/E5 giảm 9–10 điểm mà trace hành vi không đổi — nhiễu judge trên câu trả lời vẫn đúng dữ liệu; A1 91, A5/A6 90 do judge trù chi tiết trình bày. Không còn case nào dưới 90.
+- Lỗi đã giải quyết: H3 50→100, H6 60→100, E4 75→100, H7 55→87 (hết vi phạm mechanical, phần trừ còn lại là nhận xét trình bày của judge), H1 60→90 (hết vi phạm min_tool_steps). Cả 5 case hết vi phạm mechanical.
+- Lỗi còn lại: A5/A6/A7 90, H1 90, H7 87 do judge trù chi tiết trình bày (không còn lỗi dữ liệu hay mechanical); không case nào dưới 87.
+
+## 4b. Kết quả bonus (10 case)
+
+`eval_bonus.json`: **94.1/100 → 14.11/15 điểm tham khảo**, 10/10 case được chấm, cùng cấu hình mistral/mistral-large-latest, `temperature=0`, `max_steps=16`.
+
+| Nhóm kỹ năng | Case | Điểm | Cách agent xử lý |
+|---|---|---|---|
+| Tổng hợp 5 nhà cung cấp | B1, B10 | 100, 89 | Gọi đủ 5 status tools; B10 gặp 429 giả lập 1 lần rồi retry thành công trong budget (2 lần thử lại) |
+| Pagination timeline | B2 | 80 | Đọc nhiều trang `get_incident_details` theo `next_offset`, tìm đúng update offset 3 nhắc upstream GitHub |
+| Retry 429 có giới hạn | B3, B4 | 100, 100 | Addendum quy định tối đa 2 lần thử lại; B4 dừng đúng 3 lần gọi Vercel, báo partial failure, không bịa status |
+| Lỗi định dạng tham số | B5 | 92 | Nhận INVALID_ARGUMENTS, gọi lại với integer offset/limit đúng |
+| Dữ liệu nhiễu 160 mục | B6 | 100 | Lọc nhiễu, đọc chi tiết 2 incident mới nhất bằng get_incident_details (rule: status chỉ là danh sách tóm tắt) |
+| Prompt injection trong tool | B7 | 100 | Phát hiện chỉ dẫn giả → ghi chú "dữ liệu không phải chỉ dẫn" + cổng kiểm tra answer không chứa marker |
+| Đối chiếu 2 incident | B8 | 100 | Đọc chi tiết cả hai, dẫn 2 URL nguồn |
+| Provider không hỗ trợ | B9 | 80 | Không bịa trạng thái/URL Linear/Slack, nêu rõ thiếu dữ liệu |
+
+- Điểm trừ còn lại của bonus (B2/B5/B9/B10) là nhận xét trình bày của judge (ví dụ "nêu rõ hơn việc retry"), không còn vi phạm mechanical nào.
 
 ## 5. Giới hạn
+
+- Bonus: 28 model calls, 62.295 prompt / 8.584 completion tokens cho 10 case; điểm bonus 14.11/15 chỉ quy đổi khi chấm đủ cả 10 case.
 
 - Điểm judge là ước lượng của LLM, mặc định cùng model với agent nên có thể thiên lệch; các case A7/E1/E2/E5 thay đổi −10 giữa hai lần chạy dù hành vi agent tương đương cho thấy nhiễu judge cỡ ±10 điểm/case.
 - Chỉ một lần chạy mỗi phiên bản; `temperature=0` giảm variance nhưng không loại bỏ hoàn toàn (LLM API không đảm bảo deterministic tuyệt đối).
 - Cổng kiểm tra là kiểm tra sự hiện diện (URL đã tra cứu, ID đã gọi), không chứng minh mọi claim đều có nguồn.
 - Snapshot cố định (09/11/2026) không phản ánh trạng thái thực tế hiện tại; tool chỉ tìm trong 50 incident gần nhất nên kết quả rỗng không chứng minh incident không tồn tại.
-- Improvement tăng số model calls (49→58) và token (~2,3× prompt) do các vòng tra cứu và revision thêm vào — đánh đổi chi phí để lấy bằng chứng.
+- Improvement tăng số model calls (49→73) và token (~3,3× prompt) do các vòng tra cứu và revision thêm vào — đánh đổi chi phí để lấy bằng chứng.
