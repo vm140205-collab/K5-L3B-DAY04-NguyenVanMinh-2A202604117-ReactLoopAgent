@@ -14,16 +14,21 @@ CONFIG = {
 }
 
 
-def post_json(url, headers, payload):
+def post_json(url, headers, payload, attempts=2):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            # HTTP là phản hồi của provider, không retry; không in body (có thể chứa dữ liệu tài khoản).
+            raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            # Lỗi mạng tạm thời (DNS/SSL/read timeout): thử lại đúng 1 lần.
+            last_error = exc
+    reason = getattr(last_error, 'reason', last_error)
+    raise RuntimeError(f'Không kết nối được provider: {reason}') from last_error
 
 
 class Provider:
@@ -46,11 +51,16 @@ class Provider:
     def complete(self, messages, schemas):
         if self.name == 'anthropic':
             return self._anthropic(messages, schemas)
-        payload = {'model': self.model, 'messages': messages}
+        # temperature=0 để giảm variance hành vi tool-call và tăng khả năng tái lập của eval.
+        payload = {'model': self.model, 'messages': messages, 'temperature': 0}
         if schemas:
             payload['tools'] = schemas
         data = post_json(self.url, {'Authorization': f'Bearer {self.key}'}, payload)
         choice = data['choices'][0]
+        # Một số API (vd Mistral) trả finish_reason 'error' cho lỗi tạm thời; thử lại đúng 1 lần.
+        if choice.get('finish_reason') == 'error':
+            data = post_json(self.url, {'Authorization': f'Bearer {self.key}'}, payload)
+            choice = data['choices'][0]
         message = choice['message']
         # Mistral trả tool_calls: null khi không có call (OpenAI trả list rỗng hoặc bỏ key).
         calls = [{'id': c['id'], 'name': c['function']['name'], 'arguments': c['function']['arguments']} for c in message.get('tool_calls') or []]
@@ -78,7 +88,7 @@ class Provider:
             else:
                 native.append({'role': 'user', 'content': m['content']})
         tools = [{'name': x['function']['name'], 'description': x['function']['description'], 'input_schema': x['function']['parameters']} for x in schemas]
-        payload = {'model': self.model, 'max_tokens': 1024, 'system': system, 'messages': native}
+        payload = {'model': self.model, 'max_tokens': 1024, 'temperature': 0, 'system': system, 'messages': native}
         if tools:
             payload['tools'] = tools
         data = post_json(self.url, {'x-api-key': self.key, 'anthropic-version': '2023-06-01'}, payload)

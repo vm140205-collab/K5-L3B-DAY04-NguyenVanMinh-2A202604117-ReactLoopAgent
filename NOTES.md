@@ -3,51 +3,52 @@
 Họ và tên: Nguyễn Văn Minh
 MSSV: 2A202604117
 
-Cấu hình hai lần chạy (giữ nguyên): provider `mistral`, model `mistral-large-latest` cho cả agent và judge, snapshot, `max_steps=8`, bộ 22 case core.
+Cấu hình hai lần chạy (giống hệt nhau): provider `mistral`, model `mistral-large-latest` cho cả agent và judge, `temperature=0`, snapshot, `max_steps=8`, bộ 22 case core. Hai lần chạy khác nhau đúng bằng Improvement: lần 1 dùng agent gốc (chỉ kèm các sửa hạ tầng: chuẩn hoá content list, retry mạng, temperature=0), lần 2 dùng agent đã cải tiến.
 
 ## 1. Case được chọn
 
-- ID case: **H1** — "Điều tra incident GitHub h02n9572mx9y. Theo liên kết do incident cung cấp để tìm nguyên nhân và ảnh hưởng, rồi đối chiếu với incident Cloudflare yaa0w..."
-- Câu trả lời của agent (lần 1): báo cáo đúng trạng thái/thời gian của hai incident nhưng chỉ gọi 2 tool call trong **cùng một model step** và **không theo liên kết** tới incident gộp `xr3myzj7ms51`.
-- Điểm ở lần chạy 1: **60/100** (bị trần cơ học `min_tool_steps = 2`).
+- ID case: **H1** — "Điều tra incident GitHub h02n9572mx9y. Theo liên kết do incident cung cấp để tìm nguyên nhân và ảnh hưởng, rồi đối chiếu với incident Cloudflare yaa0witbl2me..."
+- Câu trả lời của agent (lần 1): báo cáo đúng dữ liệu hai incident nhưng gọi cả hai `get_incident_details` trong **cùng một model step** và **không theo liên kết** sang incident gộp `xr3myzj7ms51`.
+- Điểm ở lần chạy 1: **60/100** (bị trần cơ học `min_tool_steps = 2`: "Cần tool calls ở ít nhất 2 model steps khác nhau").
 
 ## 2. Bằng chứng trong trace
 
-Trace lần 1 (`eval_before.json`, case H1) — cả hai call ở step 1:
+Trace lần 1 (`eval_before.json`, case H1):
 
 ```text
-{'event': 'tool', 'step': 1, 'name': 'get_incident_details', 'arguments': '{"provider": "github", "incident_id": "h02n9572mx9y"}', ...}
-{'event': 'tool', 'step': 1, 'name': 'get_incident_details', 'arguments': '{"provider": "cloudflare", "incident_id": "yaa0witbl2me"}', ...}
+{'event': 'tool', 'step': 1, 'name': 'get_incident_details', 'arguments': '{"incident_id": "h02n9572mx9y"}', ...}
+{'event': 'tool', 'step': 1, 'name': 'get_incident_details', 'arguments': '{"incident_id": "yaa0witbl2me"}', ...}
 mechanical.violations: ['Cần tool calls ở ít nhất 2 model steps khác nhau.'] -> score_cap 60
 ```
 
-Nguyên nhân có thể xảy ra: model gộp mọi tra cứu vào một lượt parallel thay vì điều tra tuần tự; kết quả `h02n9572mx9y` nhắc tới incident gộp `xr3myzj7ms51` nhưng agent không gọi tiếp ở lượt sau, nên vừa vi phạm `min_tool_steps` vừa bỏ sót bằng chứng về nguyên nhân.
+Nguyên nhân: model gộp mọi tra cứu vào một lượt; kết quả `h02n9572mx9y` nhắc tới incident gộp `xr3myzj7ms51` nhưng agent không gọi tool đọc nó ở lượt sau, nên vừa vi phạm `min_tool_steps` vừa thiếu bằng chứng về nguyên nhân. Ở một lần chạy trung gian, model còn gõ sai ID (`h02n9s72mx9y` thay vì `h02n9572mx9y`) dẫn đến `INCIDENT_NOT_FOUND`.
 
 ## 3. Thay đổi đã thực hiện
 
-- Sửa gì, ở đâu: bổ sung 2 câu vào `SYSTEM_PROMPT` trong `agent.py` — hướng dẫn điều tra tuần tự: sau mỗi tool call, đọc kết quả rồi mới quyết định bước tiếp theo; khi một incident dẫn tới incident khác thì gọi incident đó ở lượt kế tiếp, không gộp mọi tra cứu vào cùng một lượt.
-- Vì sao chọn thay đổi này: lỗi này ảnh hưởng trực tiếp 2 case (H1, H6) đều bị trần 60 điểm vì cùng vi phạm `min_tool_steps`; đây là lỗi hành vi gọi tool, sửa ở system prompt là đúng tầng (không phải sửa dataset hay grading).
+- Sửa gì, ở đâu (đều trong `agent.py`, không đụng dataset/fixtures/grading):
+  1. **System prompt thêm "Nguyên tắc bằng chứng"**: điều tra tuần tự và theo liên kết giữa các incident; component chỉ lấy từ trường `components`; sao chép ID chính xác từng ký tự; luôn tra cứu ID người dùng nêu bằng tool; phải có `get_status` trước khi phát biểu trạng thái hiện tại; từ chối kết luận khi thiếu dữ liệu.
+  2. **Ghi chú sau lỗi hạ tầng** (`DATA_ERROR_NOTE`): khi tool trả timeout/lỗi mạng, chèn ghi chú nhắc model rằng lỗi không phải bằng chứng trạng thái — chống chỉ dẫn đối kháng trong câu hỏi (H7).
+  3. **Ba cổng kiểm tra sau answer** (mở rộng pattern validation nguồn mà GUIDE.md gợi ý): `validation_missing_source` (URL nguồn, yêu cầu của lab), `validation_missing_lookup` (ID nêu trong câu hỏi phải được tra cứu), `validation_unresolved_reference` (ID được nhắc trong kết quả incident phải được tra cứu nếu câu hỏi yêu cầu theo liên kết). Mỗi cổng chỉ chặn một lần và yêu cầu model sửa trong `max_steps`.
+  4. Sửa hạ tầng (có ở **cả hai** lần chạy để so sánh công bằng): chuẩn hoá `content` dạng list của Mistral về string, retry 1 lần cho lỗi mạng tạm thời và `finish_reason='error'`, đặt `temperature=0` để giảm variance.
+- Vì sao: lỗi đều là hành vi model (gộp call, đoán thay vì tra cứu, tuân theo chỉ dẫn bịa) nên sửa ở tầng prompt + cổng kiểm tra trong agent loop; bug type của Mistral sửa ở biên giới adapter (`_content_text`), đúng tầng "parse external data at boundaries".
 
 ## 4. So sánh hai lần chạy
 
 | Chỉ số | `eval_before.json` | `eval_after.json` |
 |---|---|---|
-| Điểm tổng | 91.73/100 | 88.32/100 |
-| Điểm case đã chọn (H1) | 60 | **90** |
-| Số model calls (tổng 22 case) | 48 | 51 |
-| Token agent (prompt/completion) | 35.122 / 15.770 | 43.548 / 13.611 |
-| Token judge (prompt/completion) | 42.190 / 4.831 | 38.054 / 4.785 |
+| Điểm tổng | 90.14/100 | **96.86/100** |
+| Điểm case đã chọn (H1) | 60 | **100** |
+| Số model calls (22 case) | 49 | 58 |
+| Token agent (prompt/completion) | 38.069 / 18.178 | 88.587 / 21.528 |
+| Token judge (prompt/completion) | 43.833 / 4.565 | 45.841 / 4.905 |
 
-- Lỗi đã giải quyết: H1 (60→90) — sau cải tiến, trace cho thấy step 1 đọc `h02n9572mx9y` và `yaa0witbl2me`, step 2 theo liên kết đọc `xr3myzj7ms51`; hết vi phạm `min_tool_steps`, câu trả lời có đủ nguyên nhân/ảnh hưởng của incident gộp và nguồn từng bên.
-- Lỗi còn lại hoặc mới xuất hiện:
-  - H6 vẫn 60: model vẫn gộp `get_status` + `get_incident_details` vào cùng step 1 ở case này; prompt chưa đủ mạnh để thay đổi hành vi khi danh sách việc ngắn.
-  - H2 giảm 100→50: lần này agent chỉ gọi `get_incident_details`, bỏ `get_status` (vi phạm `requires_tools`) dù nội dung trả lời đúng — biến đổi hành vi, không do lỗi logic agent.
-  - E6 giảm 100→55: khi gặp timeout giả lập, agent retry `get_status` 3 lần rồi trả lời lửng lơ, hỏi lại người dùng mã incident thay vì kết luận theo bằng chứng đã có.
-  - E2/E3 giảm 10 điểm mỗi case: cùng đúng dữ liệu nhưng judge trừ vì diễn giải khác — biến động judge.
+- Lỗi đã giải quyết: H1 60→100, H3 50→100, H6 60→100, H7 55→100, E4 75→100. Cả 5 case hết vi phạm mechanical và trả lời đủ bằng chứng theo link.
+- Lỗi còn lại: A7/E1/E2/E5 giảm 9–10 điểm mà trace hành vi không đổi — nhiễu judge trên câu trả lời vẫn đúng dữ liệu; A1 91, A5/A6 90 do judge trù chi tiết trình bày. Không còn case nào dưới 90.
 
 ## 5. Giới hạn
 
-- Điểm judge là ước lượng của LLM: cùng câu trả lời đúng dữ liệu có thể được chấm khác nhau giữa hai lần (E2, E3); judge mặc định dùng cùng model với agent nên có thể thiên lệch.
-- Điểm tổng giảm (91.73→88.32) dù cải tiến đạt mục tiêu (H1 +30, A4 +13, E1 +10): phần giảm đến từ biến đổi hành vi/judge ở các case khác (E6 −45, H2 −50), cho thấy một lần chạy mỗi phiên bản không chứng minh độ ổn định — cần nhiều lần chạy để phân biệt cải tiến thật và nhiễu loạn ngẫu nhiên.
+- Điểm judge là ước lượng của LLM, mặc định cùng model với agent nên có thể thiên lệch; các case A7/E1/E2/E5 thay đổi −10 giữa hai lần chạy dù hành vi agent tương đương cho thấy nhiễu judge cỡ ±10 điểm/case.
+- Chỉ một lần chạy mỗi phiên bản; `temperature=0` giảm variance nhưng không loại bỏ hoàn toàn (LLM API không đảm bảo deterministic tuyệt đối).
+- Cổng kiểm tra là kiểm tra sự hiện diện (URL đã tra cứu, ID đã gọi), không chứng minh mọi claim đều có nguồn.
 - Snapshot cố định (09/11/2026) không phản ánh trạng thái thực tế hiện tại; tool chỉ tìm trong 50 incident gần nhất nên kết quả rỗng không chứng minh incident không tồn tại.
-- Hai lần chạy dùng cùng cấu hình, nhưng nhiệt độ mẫu của model không cố định bằng 0 nên hành vi có thể khác nhau giữa các lần chạy.
+- Improvement tăng số model calls (49→58) và token (~2,3× prompt) do các vòng tra cứu và revision thêm vào — đánh đổi chi phí để lấy bằng chứng.
