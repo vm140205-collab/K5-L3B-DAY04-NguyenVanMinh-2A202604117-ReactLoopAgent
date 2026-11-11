@@ -9,6 +9,8 @@ CONFIG = {
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
     'openrouter': ('OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1/chat/completions'),
     'anthropic': ('ANTHROPIC_API_KEY', 'https://api.anthropic.com/v1/messages'),
+    # Mistral dùng API tương thích Chat Completions, có hỗ trợ tool calling.
+    'mistral': ('MISTRAL_API_KEY', 'https://api.mistral.ai/v1/chat/completions'),
 }
 
 
