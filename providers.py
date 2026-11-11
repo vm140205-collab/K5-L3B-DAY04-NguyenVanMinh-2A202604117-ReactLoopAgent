@@ -4,6 +4,19 @@ import os
 import urllib.error
 import urllib.request
 
+# Judge được gọi không kèm tools và phải trả JSON chấm điểm đúng format mà
+# JUDGE_INSTRUCTIONS (evals/grading.py, không sửa) đã yêu cầu. json_schema strict
+# đảm bảo JSON luôn hợp lệ và đủ trường, tránh case unscored do judge thiếu
+# reason/improvement hoặc lỗi ký tự điều khiển trong JSON.
+JUDGE_SCHEMA = {'type': 'object', 'properties': {
+    'factuality': {'type': 'integer'}, 'completeness': {'type': 'integer'},
+    'evidence': {'type': 'integer'}, 'boundaries': {'type': 'integer'},
+    'reason': {'type': 'string'}, 'improvement': {'type': 'string'}},
+    'required': ['factuality', 'completeness', 'evidence', 'boundaries', 'reason', 'improvement'],
+    'additionalProperties': False}
+JUDGE_RESPONSE_FORMAT = {'type': 'json_schema', 'json_schema':
+                         {'name': 'grading', 'strict': True, 'schema': JUDGE_SCHEMA}}
+
 CONFIG = {
     'openai': ('OPENAI_API_KEY', 'https://api.openai.com/v1/chat/completions'),
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
@@ -55,6 +68,9 @@ class Provider:
         payload = {'model': self.model, 'messages': messages, 'temperature': 0}
         if schemas:
             payload['tools'] = schemas
+        else:
+            # Caller duy nhất không dùng tools trong repo này là judge của eval.
+            payload['response_format'] = JUDGE_RESPONSE_FORMAT
         data = post_json(self.url, {'Authorization': f'Bearer {self.key}'}, payload)
         choice = data['choices'][0]
         # Một số API (vd Mistral) trả finish_reason 'error' cho lỗi tạm thời; thử lại đúng 1 lần.
